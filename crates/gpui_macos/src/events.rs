@@ -26,6 +26,11 @@ pub(crate) const ESCAPE_KEY: u16 = 0x1b;
 const TAB_KEY: u16 = 0x09;
 const SHIFT_TAB_KEY: u16 = 0x19;
 
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
+}
+
 pub fn key_to_native(key: &str) -> Cow<'_, str> {
     use cocoa::appkit::*;
     let code = match key {
@@ -269,8 +274,17 @@ pub(crate) unsafe fn platform_input_from_native(
                     native_event.scrollingDeltaY() as f32,
                 );
 
+                let cg = native_event.CGEvent();
                 let delta = if native_event.hasPreciseScrollingDeltas() == YES {
                     ScrollDelta::Pixels(raw_data.map(px))
+                } else if !cg.is_null() {
+                    // scrollingDelta floors a slow notch at ~0.1 lines (~2px); macOS's
+                    // integer line count (kCGScrollWheelEventDeltaAxis1/2) doesn't.
+                    const DELTA_AXIS_1: u32 = 11; // vertical
+                    const DELTA_AXIS_2: u32 = 12; // horizontal
+                    let line_y = CGEventGetIntegerValueField(cg, DELTA_AXIS_1) as f32;
+                    let line_x = CGEventGetIntegerValueField(cg, DELTA_AXIS_2) as f32;
+                    ScrollDelta::Lines(point(line_x, line_y))
                 } else {
                     ScrollDelta::Lines(raw_data)
                 };
