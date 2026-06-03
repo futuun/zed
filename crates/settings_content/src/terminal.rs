@@ -44,7 +44,7 @@ pub struct ProjectTerminalSettingsContent {
     ///     "# `path` is the shortest sequence of any non-space character",
     ///     "(?<link>(?<path>[^ ]+?",
     ///     "    # which may end with a line and optionally a column,",
-    ///     "    (?<line_column>:+[0-9]+(:[0-9]+)?|:?\\([0-9]+([,:][0-9]+)?\\))?",
+    ///     "    (?<line_column>:+[0-9]+(:[0-9]+)?(-[0-9]+(:[0-9]+)?)?|:?\\([0-9]+([,:][0-9]+)?\\))?",
     ///     "))",
     ///     "# which must be followed by a matching quote",
     ///     "(?(<quote>)\\k<quote>)",

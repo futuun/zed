@@ -175,6 +175,8 @@ fn possible_open_target_internal(
                 path: stripped.to_owned(),
                 row: original_path.row,
                 column: original_path.column,
+                end_row: original_path.end_row,
+                end_column: original_path.end_column,
             });
         }
         if let Some(stripped) = path_with_position.path.strip_prefix(prefix_str).ok() {
@@ -182,6 +184,8 @@ fn possible_open_target_internal(
                 path: stripped.to_owned(),
                 row: path_with_position.row,
                 column: path_with_position.column,
+                end_row: path_with_position.end_row,
+                end_column: path_with_position.end_column,
             });
         }
     }
@@ -214,6 +218,8 @@ fn possible_open_target_internal(
                     path: worktree_root.to_path_buf(),
                     row: path_with_position.row,
                     column: path_with_position.column,
+                    end_row: path_with_position.end_row,
+                    end_column: path_with_position.end_column,
                 };
                 match worktree.read(cx).root_entry() {
                     Some(root_entry) => {
@@ -236,6 +242,8 @@ fn possible_open_target_internal(
                         .to_owned(),
                     row: path_with_position.row,
                     column: path_with_position.column,
+                    end_row: path_with_position.end_row,
+                    end_column: path_with_position.end_column,
                 }
             };
 
@@ -271,6 +279,8 @@ fn possible_open_target_internal(
                         path: worktree.read(cx).absolutize(&entry.path),
                         row: path_to_check.row,
                         column: path_to_check.column,
+                        end_row: path_to_check.end_row,
+                        end_column: path_to_check.end_column,
                     },
                     entry.clone(),
                     #[cfg(any(test, feature = "test-support"))]
@@ -309,6 +319,8 @@ fn possible_open_target_internal(
                             path: cwd.join(maybe_path),
                             row: path_to_check.row,
                             column: path_to_check.column,
+                            end_row: path_to_check.end_row,
+                            end_column: path_to_check.end_column,
                         });
                     }
                 }
@@ -333,6 +345,8 @@ fn possible_open_target_internal(
                                     path: home_path,
                                     row: path_to_check.row,
                                     column: path_to_check.column,
+                                    end_row: path_to_check.end_row,
+                                    end_column: path_to_check.end_column,
                                 });
                             }
                         } else {
@@ -340,6 +354,8 @@ fn possible_open_target_internal(
                                 path: maybe_path.clone(),
                                 row: path_to_check.row,
                                 column: path_to_check.column,
+                                end_row: path_to_check.end_row,
+                                end_column: path_to_check.end_column,
                             });
                             if maybe_path.is_relative() {
                                 for worktree in &worktree_candidates {
@@ -348,6 +364,8 @@ fn possible_open_target_internal(
                                             path: worktree.read(cx).abs_path().join(maybe_path),
                                             row: path_to_check.row,
                                             column: path_to_check.column,
+                                            end_row: path_to_check.end_row,
+                                            end_column: path_to_check.end_column,
                                         });
                                     }
                                 }
@@ -403,6 +421,8 @@ fn possible_open_target_internal(
                                         path: worktree.absolutize(&entry.path),
                                         row: path_in_worktree.row,
                                         column: path_in_worktree.column,
+                                        end_row: path_in_worktree.end_row,
+                                        end_column: path_in_worktree.end_column,
                                     },
                                     entry.clone(),
                                     #[cfg(any(test, feature = "test-support"))]

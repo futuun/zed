@@ -710,6 +710,10 @@ mod tests {
             test_path!("‹«/👉test/cool.rs»(«4»,«2»)›");
             test_path!("‹«/test/cool.rs»(«4»👉,«2»)›");
 
+            // path with a line or line:column range
+            test_path!("‹«/👉test/cool.rs»:«4»-20›");
+            test_path!("‹«/👉test/cool.rs»:«4»:«2»-20:8›");
+
             // path, line, column, and ':' suffix
             test_path!("‹«/👉test/cool.rs»:«4»:«2»›:");
             test_path!("‹«/test/cool.rs»:«4»:«👉2»›:");
@@ -1800,7 +1804,9 @@ mod tests {
                     &PathWithPosition {
                         path: PathBuf::from(self.expected_hyperlink.iri_or_path.clone()),
                         row: self.expected_hyperlink.row,
-                        column: self.expected_hyperlink.column
+                        column: self.expected_hyperlink.column,
+                        end_row: None,
+                        end_column: None,
                     },
                     &self.expected_hyperlink.hyperlink_match
                 ),

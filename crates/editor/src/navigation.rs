@@ -944,6 +944,57 @@ impl Editor {
         self.go_to_singleton_buffer_range_impl(point..point, false, window, cx);
     }
 
+    /// Selects the range carried by `position` (e.g. `path:1-5`), or places the cursor when it
+    /// has none. No-op for multi-buffers or a position without a row.
+    pub fn go_to_singleton_buffer_position(
+        &mut self,
+        position: &util::paths::PathWithPosition,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(buffer) = self.buffer().read(cx).as_singleton() else {
+            return;
+        };
+        let snapshot = buffer.read(cx).snapshot();
+        let Some(range) = Self::selection_range_for_position(&snapshot, position) else {
+            return;
+        };
+        self.go_to_singleton_buffer_range(range, window, cx);
+    }
+
+    fn selection_range_for_position(
+        snapshot: &language::BufferSnapshot,
+        position: &util::paths::PathWithPosition,
+    ) -> Option<Range<Point>> {
+        let start = Self::resolve_buffer_point(snapshot, position.row?, position.column, false);
+        let Some(end_row) = position.end_row else {
+            return Some(start..start);
+        };
+        let end = Self::resolve_buffer_point(snapshot, end_row, position.end_column, true);
+        if end <= start {
+            Some(start..start)
+        } else {
+            Some(start..end)
+        }
+    }
+
+    fn resolve_buffer_point(
+        snapshot: &language::BufferSnapshot,
+        row: u32,
+        column: Option<u32>,
+        end_of_line: bool,
+    ) -> Point {
+        let row = row.saturating_sub(1);
+        if row > snapshot.max_point().row {
+            return snapshot.max_point();
+        }
+        match column {
+            Some(column) => snapshot.point_from_external_input(row, column.saturating_sub(1)),
+            None if end_of_line => snapshot.clip_point(Point::new(row, u32::MAX), Bias::Left),
+            None => Point::new(row, 0),
+        }
+    }
+
     pub fn go_to_next_document_highlight(
         &mut self,
         _: &GoToNextDocumentHighlight,

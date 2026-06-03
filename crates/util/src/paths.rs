@@ -717,6 +717,12 @@ pub struct PathWithPosition {
     pub row: Option<u32>,
     // Absent if row is absent.
     pub column: Option<u32>,
+    // Absent for a plain (non-range) position.
+    #[serde(default)]
+    pub end_row: Option<u32>,
+    // Absent if end_row is absent.
+    #[serde(default)]
+    pub end_column: Option<u32>,
 }
 
 impl PathWithPosition {
@@ -726,6 +732,8 @@ impl PathWithPosition {
             path,
             row: None,
             column: None,
+            end_row: None,
+            end_column: None,
         }
     }
 
@@ -746,26 +754,36 @@ impl PathWithPosition {
     ///     path: PathBuf::from("test_file"),
     ///     row: None,
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file:10"), PathWithPosition {
     ///     path: PathBuf::from("test_file"),
     ///     row: Some(10),
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs"),
     ///     row: None,
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs:1"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs"),
     ///     row: Some(1),
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs:1:2"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs"),
     ///     row: Some(1),
     ///     column: Some(2),
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// ```
     ///
@@ -777,60 +795,86 @@ impl PathWithPosition {
     ///     path: PathBuf::from("test_file.rs:a"),
     ///     row: None,
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs:a:b"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs:a:b"),
     ///     row: None,
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs"),
     ///     row: None,
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs::1"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs"),
     ///     row: Some(1),
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs:1::"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs"),
     ///     row: Some(1),
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs::1:2"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs"),
     ///     row: Some(1),
     ///     column: Some(2),
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs:1::2"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs:1"),
     ///     row: Some(2),
     ///     column: None,
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// assert_eq!(PathWithPosition::parse_str("test_file.rs:1:2:3"), PathWithPosition {
     ///     path: PathBuf::from("test_file.rs:1"),
     ///     row: Some(2),
     ///     column: Some(3),
+    ///     end_row: None,
+    ///     end_column: None,
     /// });
     /// ```
     pub fn parse_str(s: &str) -> Self {
         let trimmed = s.trim();
+
+        // A dash is a range separator only directly after a `:row[:col]` start, so dashes in
+        // filenames (e.g. `my-file.rs`) aren't mistaken for ranges.
+        static RANGE_END_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^(.*:\d+(?::\d+)?)-(\d*)(?::(\d*))?:*$").unwrap());
+        if let Some(caps) = RANGE_END_RE.captures(trimmed) {
+            let head = caps.get(1).map_or("", |m| m.as_str());
+            let mut start = Self::parse_str(head);
+            if start.row.is_some() {
+                // A half-typed range like `path:2-` keeps just the start position.
+                start.end_row = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+                start.end_column = start
+                    .end_row
+                    .and(caps.get(3).and_then(|m| m.as_str().parse::<u32>().ok()));
+                return start;
+            }
+        }
+
         let path = Path::new(trimmed);
         let Some(maybe_file_name_with_row_col) = path.file_name().unwrap_or_default().to_str()
         else {
-            return Self {
-                path: Path::new(s).to_path_buf(),
-                row: None,
-                column: None,
-            };
+            return Self::from_path(PathBuf::from(s));
         };
         if maybe_file_name_with_row_col.is_empty() {
-            return Self {
-                path: Path::new(s).to_path_buf(),
-                row: None,
-                column: None,
-            };
+            return Self::from_path(PathBuf::from(s));
         }
 
         // Let's avoid repeated init cost on this. It is subject to thread contention, but
@@ -853,6 +897,8 @@ impl PathWithPosition {
                     path: Path::new(path_without_suffix).to_path_buf(),
                     row,
                     column,
+                    end_row: None,
+                    end_column: None,
                 }
             }
             None => {
@@ -892,6 +938,8 @@ impl PathWithPosition {
                     path: PathBuf::from(path_string),
                     row,
                     column,
+                    end_row: None,
+                    end_column: None,
                 }
             }
         }
@@ -905,20 +953,27 @@ impl PathWithPosition {
             path: mapping(self.path)?,
             row: self.row,
             column: self.column,
+            end_row: self.end_row,
+            end_column: self.end_column,
         })
     }
 
     pub fn to_string(&self, path_to_string: &dyn Fn(&PathBuf) -> String) -> String {
         let path_string = path_to_string(&self.path);
-        if let Some(row) = self.row {
-            if let Some(column) = self.column {
-                format!("{path_string}:{row}:{column}")
-            } else {
-                format!("{path_string}:{row}")
+        let Some(row) = self.row else {
+            return path_string;
+        };
+        let mut result = match self.column {
+            Some(column) => format!("{path_string}:{row}:{column}"),
+            None => format!("{path_string}:{row}"),
+        };
+        if let Some(end_row) = self.end_row {
+            match self.end_column {
+                Some(end_column) => result.push_str(&format!("-{end_row}:{end_column}")),
+                None => result.push_str(&format!("-{end_row}")),
             }
-        } else {
-            path_string
         }
+        result
     }
 }
 
@@ -2484,7 +2539,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("test_file"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2493,7 +2550,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("a:bc:.zip"),
                 row: Some(1),
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2502,7 +2561,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("one.second.zip"),
                 row: Some(1),
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2512,7 +2573,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("test_file"),
                 row: Some(10),
-                column: Some(1)
+                column: Some(1),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2521,7 +2584,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("test_file.rs"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2530,7 +2595,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("test_file.rs"),
                 row: Some(1),
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2539,7 +2606,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("ab\ncd"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2548,7 +2617,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("👋\nab"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2558,6 +2629,8 @@ mod tests {
                 path: PathBuf::from("Types.hs"),
                 row: Some(617),
                 column: Some(9),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2566,7 +2639,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("main (1).log"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
     }
@@ -2580,6 +2655,8 @@ mod tests {
                 path: PathBuf::from("foo/bar"),
                 row: Some(34),
                 column: None,
+                end_row: None,
+                end_column: None,
             }
         );
         assert_eq!(
@@ -2587,7 +2664,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("foo/bar.rs:1902"),
                 row: Some(15),
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2597,6 +2676,8 @@ mod tests {
                 path: PathBuf::from("app-editors:zed-0.143.6:20240710-201212.log"),
                 row: Some(34),
                 column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2606,6 +2687,8 @@ mod tests {
                 path: PathBuf::from("crates/file_finder/src/file_finder.rs"),
                 row: Some(1902),
                 column: Some(13),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2615,6 +2698,8 @@ mod tests {
                 path: PathBuf::from("crate/utils/src/test:today.log"),
                 row: Some(34),
                 column: None,
+                end_row: None,
+                end_column: None,
             }
         );
         assert_eq!(
@@ -2623,6 +2708,122 @@ mod tests {
                 path: PathBuf::from("/testing/out/src/file_finder.odin"),
                 row: Some(7),
                 column: Some(15),
+                end_row: None,
+                end_column: None,
+            }
+        );
+    }
+
+    #[perf]
+    #[cfg(not(target_os = "windows"))]
+    fn path_with_position_parse_range() {
+        // Line-only range: `path:start-end`.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:10-20"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs"),
+                row: Some(10),
+                column: None,
+                end_row: Some(20),
+                end_column: None,
+            }
+        );
+        // Columns on both ends: `path:r:c-r:c`.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:1:5-5:2"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs"),
+                row: Some(1),
+                column: Some(5),
+                end_row: Some(5),
+                end_column: Some(2),
+            }
+        );
+        // Start has a column, end omits it.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:1:5-5"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs"),
+                row: Some(1),
+                column: Some(5),
+                end_row: Some(5),
+                end_column: None,
+            }
+        );
+        // Start omits the column, end has one.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:1-5:3"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs"),
+                row: Some(1),
+                column: None,
+                end_row: Some(5),
+                end_column: Some(3),
+            }
+        );
+        // Trailing colons are ignored, as with plain positions.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:10-20:"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs"),
+                row: Some(10),
+                column: None,
+                end_row: Some(20),
+                end_column: None,
+            }
+        );
+        // A dash in the filename (not directly after a `:<row>` start) stays in the path.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/my-file.rs:10-20"),
+            PathWithPosition {
+                path: PathBuf::from("foo/my-file.rs"),
+                row: Some(10),
+                column: None,
+                end_row: Some(20),
+                end_column: None,
+            }
+        );
+        // Without a `:<row>` start, a dash is never a range separator.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/my-file.rs"),
+            PathWithPosition {
+                path: PathBuf::from("foo/my-file.rs"),
+                row: None,
+                column: None,
+                end_row: None,
+                end_column: None,
+            }
+        );
+        // A non-numeric range end is not a range; the whole suffix stays in the path.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:10-abc"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs:10-abc"),
+                row: None,
+                column: None,
+                end_row: None,
+                end_column: None,
+            }
+        );
+        // An incomplete range (dash typed, end not yet) keeps just the start position.
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:2-"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs"),
+                row: Some(2),
+                column: None,
+                end_row: None,
+                end_column: None,
+            }
+        );
+        assert_eq!(
+            PathWithPosition::parse_str("foo/bar.rs:1:5-"),
+            PathWithPosition {
+                path: PathBuf::from("foo/bar.rs"),
+                row: Some(1),
+                column: Some(5),
+                end_row: None,
+                end_column: None,
             }
         );
     }
@@ -2635,7 +2836,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("crates\\utils\\paths.rs"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2644,7 +2847,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("C:\\Users\\someone\\test_file.rs"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2653,7 +2858,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("C:\\Users\\someone\\main (1).log"),
                 row: None,
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
     }
@@ -2666,7 +2873,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("crates\\utils\\paths.rs"),
                 row: Some(101),
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2675,7 +2884,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("\\\\?\\C:\\Users\\someone\\test_file.rs"),
                 row: Some(1),
-                column: Some(20)
+                column: Some(20),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2684,7 +2895,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("C:\\Users\\someone\\test_file.rs"),
                 row: Some(1902),
-                column: Some(13)
+                column: Some(13),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2694,7 +2907,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("\\\\?\\C:\\Users\\someone\\test_file.rs"),
                 row: Some(1902),
-                column: Some(13)
+                column: Some(13),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2703,7 +2918,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("\\\\?\\C:\\Users\\someone\\test_file.rs:1902"),
                 row: Some(13),
-                column: Some(15)
+                column: Some(15),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2712,7 +2929,9 @@ mod tests {
             PathWithPosition {
                 path: PathBuf::from("\\\\?\\C:\\Users\\someone\\test_file.rs:1902"),
                 row: Some(15),
-                column: None
+                column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2722,6 +2941,8 @@ mod tests {
                 path: PathBuf::from("\\\\?\\C:\\Users\\someone\\test_file.rs"),
                 row: Some(1902),
                 column: Some(13),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2731,6 +2952,8 @@ mod tests {
                 path: PathBuf::from("\\\\?\\C:\\Users\\someone\\test_file.rs"),
                 row: Some(1902),
                 column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2740,6 +2963,8 @@ mod tests {
                 path: PathBuf::from("C:\\Users\\someone\\test_file.rs"),
                 row: Some(1902),
                 column: Some(13),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2749,6 +2974,8 @@ mod tests {
                 path: PathBuf::from("C:\\Users\\someone\\test_file.rs"),
                 row: Some(1902),
                 column: Some(13),
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2758,6 +2985,8 @@ mod tests {
                 path: PathBuf::from("C:\\Users\\someone\\test_file.rs"),
                 row: Some(1902),
                 column: None,
+                end_row: None,
+                end_column: None,
             }
         );
 
@@ -2767,6 +2996,8 @@ mod tests {
                 path: PathBuf::from("crates\\utils\\paths.rs"),
                 row: Some(101),
                 column: None,
+                end_row: None,
+                end_column: None,
             }
         );
     }

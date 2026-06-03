@@ -169,23 +169,13 @@ fn possibly_open_target(
         if let Some(opened_item) = opened_items.first() {
             if open_target.is_file() {
                 if let Some(Ok(opened_item)) = opened_item {
-                    if let Some(row) = path_to_open.row {
-                        let col = path_to_open.column.unwrap_or(0);
-                        if let Some(active_editor) = opened_item.downcast::<Editor>() {
-                            active_editor
-                                .downgrade()
-                                .update_in(cx, |editor, window, cx| {
-                                    editor.go_to_singleton_buffer_point(
-                                        language::Point::new(
-                                            row.saturating_sub(1),
-                                            col.saturating_sub(1),
-                                        ),
-                                        window,
-                                        cx,
-                                    )
-                                })
-                                .log_err();
-                        }
+                    if let Some(active_editor) = opened_item.downcast::<Editor>() {
+                        active_editor
+                            .downgrade()
+                            .update_in(cx, |editor, window, cx| {
+                                editor.go_to_singleton_buffer_position(path_to_open, window, cx)
+                            })
+                            .log_err();
                     }
                     return Ok(Some(open_target));
                 }

@@ -694,7 +694,8 @@ fn test_line_range_query_parsing() {
     assert_eq!(query.path_query(), "fs/smb/server/connection.c");
     assert_eq!(query.path_position.row, Some(428));
     assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, Some(428..=440));
+    assert_eq!(query.path_position.end_row, Some(440));
+    assert_eq!(query.path_position.end_column, None);
 }
 
 #[test]
@@ -705,7 +706,7 @@ fn test_parse_search_query() {
     assert_eq!(query.path_query(), "content.rs");
     assert_eq!(query.path_position.row, Some(2));
     assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, None);
+    assert_eq!(query.path_position.end_row, None);
 
     // Test multiple trailing colons are also stripped.
     let query = parse_file_search_query("content.rs:2:::");
@@ -713,15 +714,15 @@ fn test_parse_search_query() {
     assert_eq!(query.path_query(), "content.rs");
     assert_eq!(query.path_position.row, Some(2));
     assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, None);
+    assert_eq!(query.path_position.end_row, None);
 
-    // Test trailing colon after an incomplete range is stripped.
+    // Incomplete range (dash typed, no end yet) keeps just the start row.
     let query = parse_file_search_query("content.rs:2-:");
     assert_eq!(query.raw_query, "content.rs:2-");
     assert_eq!(query.path_query(), "content.rs");
     assert_eq!(query.path_position.row, Some(2));
     assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, None);
+    assert_eq!(query.path_position.end_row, None);
 
     // Test trailing colon after a complete range is stripped, range is preserved.
     let query = parse_file_search_query("content.rs:2-4:");
@@ -729,31 +730,37 @@ fn test_parse_search_query() {
     assert_eq!(query.path_query(), "content.rs");
     assert_eq!(query.path_position.row, Some(2));
     assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, Some(2..=4));
+    assert_eq!(query.path_position.end_row, Some(4));
+    assert_eq!(query.path_position.end_column, None);
 
     // Test multiple trailing colons after a complete range are all stripped.
     let query = parse_file_search_query("content.rs:2-4:::");
     assert_eq!(query.raw_query, "content.rs:2-4");
     assert_eq!(query.path_query(), "content.rs");
     assert_eq!(query.path_position.row, Some(2));
-    assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, Some(2..=4));
+    assert_eq!(query.path_position.end_row, Some(4));
 
-    // Test invalid end should fall back to using the start as a single row.
+    // Columns on both ends are preserved.
+    let query = parse_file_search_query("content.rs:1:5-5:2");
+    assert_eq!(query.path_query(), "content.rs");
+    assert_eq!(query.path_position.row, Some(1));
+    assert_eq!(query.path_position.column, Some(5));
+    assert_eq!(query.path_position.end_row, Some(5));
+    assert_eq!(query.path_position.end_column, Some(2));
+
+    // Invalid (non-numeric) range end leaves the whole suffix in the path.
     let query = parse_file_search_query("content.rs:5-x");
     assert_eq!(query.raw_query, "content.rs:5-x");
-    assert_eq!(query.path_query(), "content.rs");
-    assert_eq!(query.path_position.row, Some(5));
-    assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, None);
+    assert_eq!(query.path_query(), "content.rs:5-x");
+    assert_eq!(query.path_position.row, None);
+    assert_eq!(query.path_position.end_row, None);
 
-    // Test reversed range (end < start) should fall back to using the start as a single row.
+    // Reversed range (end < start) is parsed as-is.
     let query = parse_file_search_query("content.rs:10-5");
     assert_eq!(query.raw_query, "content.rs:10-5");
     assert_eq!(query.path_query(), "content.rs");
     assert_eq!(query.path_position.row, Some(10));
-    assert_eq!(query.path_position.column, None);
-    assert_eq!(query.line_range, None);
+    assert_eq!(query.path_position.end_row, Some(5));
 }
 
 #[gpui::test]
@@ -803,7 +810,8 @@ async fn test_line_range_query_selects_lines(cx: &mut TestAppContext) {
         );
         assert_eq!(latest_search_query.path_position.row, Some(2));
         assert_eq!(latest_search_query.path_position.column, None);
-        assert_eq!(latest_search_query.line_range, Some(2..=4));
+        assert_eq!(latest_search_query.path_position.end_row, Some(4));
+        assert_eq!(latest_search_query.path_position.end_column, None);
     });
 
     cx.dispatch_action(Confirm);
@@ -821,8 +829,9 @@ async fn test_line_range_query_selects_lines(cx: &mut TestAppContext) {
         let selection = all_selections.into_iter().next().unwrap();
         assert_eq!(selection.start.row, 1);
         assert_eq!(selection.start.column, 0);
-        assert_eq!(selection.end.row, 4);
-        assert_eq!(selection.end.column, 0);
+        // The omitted end column extends the selection to the end of line 4.
+        assert_eq!(selection.end.row, 3);
+        assert_eq!(selection.end.column, "line 4".len() as u32);
     });
 }
 
