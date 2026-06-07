@@ -17,14 +17,14 @@
 
 use crate::PinchEvent;
 use crate::{
-    Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, Bounds, ClickEvent, DispatchPhase,
+    Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, Axis, Bounds, ClickEvent, DispatchPhase,
     Display, Element, ElementId, Entity, EntityId, FocusHandle, Global, GlobalElementId, Hitbox,
     HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext, KeyDownEvent,
     KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, ModifiersChangedEvent, MouseButton,
     MouseClickEvent, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, Overflow,
-    ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
-    StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point, px,
-    size,
+    ParentElement, Pixels, Point, Render, ScrollVelocity, ScrollWheelEvent, SharedString, Size,
+    SmoothScrollSettings, Style, StyleRefinement, Styled, Task, TooltipId, Visibility, Window,
+    WindowControlArea, point, px, size,
 };
 use collections::HashMap;
 use gpui_util::ResultExt;
@@ -40,7 +40,7 @@ use std::{
     mem,
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use super::ImageCacheProvider;
@@ -1887,6 +1887,7 @@ pub struct Interactivity {
     pub(crate) tracked_scroll_handle: Option<ScrollHandle>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_velocity: Option<Rc<RefCell<ScrollVelocity>>>,
     pub(crate) group: Option<SharedString>,
     /// The base style of the element, before any modifications are applied
     /// by focus, active, etc.
@@ -2024,7 +2025,9 @@ impl Interactivity {
                 }
 
                 if let Some(scroll_handle) = self.tracked_scroll_handle.as_ref() {
-                    self.scroll_offset = Some(scroll_handle.0.borrow().offset.clone());
+                    let scroll_handle_state = scroll_handle.0.borrow();
+                    self.scroll_offset = Some(scroll_handle_state.offset.clone());
+                    self.scroll_velocity = Some(scroll_handle_state.scroll_velocity.clone());
                 } else if (self.base_style.overflow.x == Some(Overflow::Scroll)
                     || self.base_style.overflow.y == Some(Overflow::Scroll))
                     && let Some(element_state) = element_state.as_mut()
@@ -2032,6 +2035,12 @@ impl Interactivity {
                     self.scroll_offset = Some(
                         element_state
                             .scroll_offset
+                            .get_or_insert_with(Rc::default)
+                            .clone(),
+                    );
+                    self.scroll_velocity = Some(
+                        element_state
+                            .scroll_velocity
                             .get_or_insert_with(Rc::default)
                             .clone(),
                     );
@@ -2202,11 +2211,38 @@ impl Interactivity {
             // were removed or the bounds became larger).
             let mut scroll_offset = scroll_offset.borrow_mut();
 
+            if let Some(scroll_velocity) = self.scroll_velocity.as_ref() {
+                let mut scroll_velocity = scroll_velocity.borrow_mut();
+                if scroll_velocity.is_active() {
+                    // Snap under ~1px, divide by scale factor to stay display-density independent.
+                    let snap_epsilon = 1.0 / window.scale_factor() as f64;
+                    let delta = scroll_velocity.advance(Instant::now(), snap_epsilon);
+                    scroll_offset.x += px(delta.x as f32);
+                    scroll_offset.y += px(delta.y as f32);
+                }
+            }
+            let unclamped_offset = *scroll_offset;
+
             scroll_offset.x = scroll_offset.x.clamp(-scroll_max.x, px(0.));
             if scroll_to_bottom {
                 scroll_offset.y = -scroll_max.y;
             } else {
                 scroll_offset.y = scroll_offset.y.clamp(-scroll_max.y, px(0.));
+            }
+
+            if let Some(scroll_velocity) = self.scroll_velocity.as_ref() {
+                let mut scroll_velocity = scroll_velocity.borrow_mut();
+                if scroll_velocity.is_active() {
+                    if scroll_offset.x != unclamped_offset.x {
+                        scroll_velocity.stop_along(Axis::Horizontal);
+                    }
+                    if scroll_offset.y != unclamped_offset.y {
+                        scroll_velocity.stop_along(Axis::Vertical);
+                    }
+                    if scroll_velocity.is_active() {
+                        window.request_animation_frame();
+                    }
+                }
             }
 
             if let Some(mut scroll_handle_state) = tracked_scroll_handle {
@@ -2995,6 +3031,7 @@ impl Interactivity {
             let line_height = window.line_height();
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
+            let scroll_velocity = self.scroll_velocity.clone();
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
@@ -3024,10 +3061,22 @@ impl Interactivity {
                             delta_x = Pixels::ZERO;
                         }
                     }
-                    scroll_offset.y += delta_y;
-                    scroll_offset.x += delta_x;
-                    if *scroll_offset != old_scroll_offset {
-                        cx.notify(current_view);
+                    if let Some(scroll_velocity) = scroll_velocity
+                        .as_ref()
+                        .filter(|_| SmoothScrollSettings::enabled(cx))
+                    {
+                        if !delta_x.is_zero() || !delta_y.is_zero() {
+                            scroll_velocity
+                                .borrow_mut()
+                                .impulse(point(f64::from(delta_x), f64::from(delta_y)));
+                            cx.notify(current_view);
+                        }
+                    } else {
+                        scroll_offset.y += delta_y;
+                        scroll_offset.x += delta_x;
+                        if *scroll_offset != old_scroll_offset {
+                            cx.notify(current_view);
+                        }
                     }
                 }
             });
@@ -3258,6 +3307,7 @@ pub struct InteractiveElementState {
     /// blur). `None` means no activation key is pending.
     pub(crate) pending_keyboard_down: Option<Rc<RefCell<Option<u64>>>>,
     pub(crate) scroll_offset: Option<Rc<RefCell<Point<Pixels>>>>,
+    pub(crate) scroll_velocity: Option<Rc<RefCell<ScrollVelocity>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
 }
 
@@ -3793,6 +3843,7 @@ impl ScrollAnchor {
 #[derive(Default, Debug)]
 struct ScrollHandleState {
     offset: Rc<RefCell<Point<Pixels>>>,
+    scroll_velocity: Rc<RefCell<ScrollVelocity>>,
     bounds: Bounds<Pixels>,
     max_offset: Point<Pixels>,
     child_bounds: Vec<Bounds<Pixels>>,
@@ -3921,6 +3972,8 @@ impl ScrollHandle {
 
         let active_item = match state.child_bounds.get(active_item.index) {
             Some(bounds) => {
+                // Cancel any in-flight wheel animation before jumping.
+                state.scroll_velocity.borrow_mut().stop();
                 let mut scroll_offset = state.offset.borrow_mut();
 
                 match active_item.strategy {
@@ -3972,6 +4025,7 @@ impl ScrollHandle {
     pub fn set_offset(&self, mut position: Point<Pixels>) {
         let state = self.0.borrow();
         *state.offset.borrow_mut() = position;
+        state.scroll_velocity.borrow_mut().stop();
     }
 
     /// Get the logical scroll top, based on a child index and a pixel offset.

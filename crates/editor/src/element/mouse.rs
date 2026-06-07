@@ -6,8 +6,8 @@ use feature_flags::{DiffReviewFeatureFlag, FeatureFlagAppExt as _};
 use gpui::{
     AnyElement, App, AvailableSpace, ClickEvent, Context, DefiniteLength, DispatchPhase, Element,
     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
-    ParentElement, Pixels, PressureStage, ScrollDelta, ScrollWheelEvent, TextStyleRefinement,
-    Window, anchored, deferred, point, px,
+    ParentElement, Pixels, PressureStage, ScrollDelta, ScrollWheelEvent, SmoothScrollSettings,
+    TextStyleRefinement, Window, anchored, deferred, point, px,
 };
 use multi_buffer::MultiBufferRow;
 use project::DisableAiSettings;
@@ -490,6 +490,9 @@ impl EditorElement {
             let editor = self.editor.clone();
             let hitbox = layout.hitbox.clone();
             let mut delta = ScrollDelta::default();
+            // The frame's coalesced travel is impulsed incrementally; track what's
+            // been applied so each event only adds its own increment.
+            let mut applied_units = point(0f64, 0f64);
 
             // Set a minimum scroll_sensitivity of 0.01 to make sure the user doesn't
             // accidentally turn off their scrolling.
@@ -567,7 +570,14 @@ impl EditorElement {
                             }
 
                             if scroll_position != current_scroll_position {
-                                editor.scroll(scroll_position, axis, window, cx);
+                                if SmoothScrollSettings::enabled(cx) {
+                                    let desired_units = scroll_position - current_scroll_position;
+                                    let increment = desired_units - applied_units;
+                                    applied_units = desired_units;
+                                    editor.scroll_impulse(increment, axis, window, cx);
+                                } else {
+                                    editor.scroll(scroll_position, axis, window, cx);
+                                }
                                 cx.stop_propagation();
                             } else if y < 0. && !forbid_vertical_scroll {
                                 // Due to clamping, we may fail to detect cases of overscroll to the top;

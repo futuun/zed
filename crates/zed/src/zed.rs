@@ -407,6 +407,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
     .detach();
 
     init_cursor_hide_mode(cx);
+    init_smooth_scrolling(cx);
 
     cx.observe_new(|_multi_workspace: &mut MultiWorkspace, window, cx| {
         let Some(window) = window else {
@@ -1969,6 +1970,23 @@ impl Settings for CursorHideModeSetting {
 
 fn init_cursor_hide_mode(cx: &mut App) {
     let apply = |cx: &mut App| cx.set_cursor_hide_mode(CursorHideModeSetting::get_global(cx).0);
+    apply(cx);
+    cx.observe_global::<SettingsStore>(apply).detach();
+}
+
+#[derive(Copy, Clone, Debug, settings::RegisterSetting)]
+struct SmoothScrollSetting(gpui::SmoothScrollSettings);
+
+impl Settings for SmoothScrollSetting {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        Self(gpui::SmoothScrollSettings {
+            enabled: content.editor.smooth_scrolling.unwrap_or_default(),
+        })
+    }
+}
+
+fn init_smooth_scrolling(cx: &mut App) {
+    let apply = |cx: &mut App| cx.set_global(SmoothScrollSetting::get_global(cx).0);
     apply(cx);
     cx.observe_global::<SettingsStore>(apply).detach();
 }

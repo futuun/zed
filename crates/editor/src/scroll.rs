@@ -13,7 +13,8 @@ use crate::{
 pub use autoscroll::{Autoscroll, AutoscrollStrategy};
 use core::fmt::Debug;
 use gpui::{
-    Along, App, AppContext as _, Axis, Context, Entity, EntityId, Pixels, Task, Window, point, px,
+    Along, App, AppContext as _, Axis, Context, Entity, EntityId, Pixels, ScrollVelocity,
+    SmoothScrollSettings, Task, Window, point, px,
 };
 use language::language_settings::{AllLanguageSettings, SoftWrap};
 use language::{Bias, Point};
@@ -229,6 +230,10 @@ pub struct ScrollManager {
     forbid_vertical_scroll: bool,
     notified_top_overscroll: bool,
     minimap_thumb_state: Option<ScrollbarThumbState>,
+    scroll_velocity: ScrollVelocity,
+    /// Set while the animation writes its own frames, so `set_anchor` can tell them
+    /// from external writes (which cancel the animation instead of fighting it).
+    applying_scroll_animation: bool,
     _save_scroll_position_task: Task<()>,
 }
 
@@ -253,6 +258,8 @@ impl ScrollManager {
             forbid_vertical_scroll: false,
             notified_top_overscroll: false,
             minimap_thumb_state: None,
+            scroll_velocity: ScrollVelocity::default(),
+            applying_scroll_animation: false,
             _save_scroll_position_task: Task::ready(()),
         }
     }
@@ -486,6 +493,10 @@ impl ScrollManager {
             return WasScrolled(false);
         }
 
+        if !self.applying_scroll_animation {
+            self.scroll_velocity.stop();
+        }
+
         self.notified_top_overscroll = false;
         self.anchor.update(cx, |shared, _| {
             shared.scroll_anchor = adjusted_anchor;
@@ -673,6 +684,25 @@ impl Editor {
         self.scroll_manager.scroll_top_display_point(snapshot, cx)
     }
 
+    /// The display point at the top of the view once any in-flight scroll animation
+    /// lands; the current scroll top when none is active. Cursor math right after a
+    /// scroll must use this, since the current top won't have moved yet.
+    pub fn projected_scroll_top_display_point(
+        &self,
+        snapshot: &DisplaySnapshot,
+        cx: &App,
+    ) -> DisplayPoint {
+        let position = self.scroll_manager.scroll_position(snapshot, cx)
+            + self.scroll_manager.scroll_velocity.remaining_travel();
+        snapshot.clip_point(
+            DisplayPoint::new(
+                DisplayRow(position.y.max(0.) as u32),
+                position.x.max(0.) as u32,
+            ),
+            Bias::Left,
+        )
+    }
+
     pub fn vertical_scroll_margin(&self) -> usize {
         self.scroll_manager.vertical_scroll_margin as usize
     }
@@ -726,6 +756,65 @@ impl Editor {
         self.scroll_manager.visible_column_count = Some(columns);
     }
 
+    /// Feed a relative scroll input (e.g. a wheel tick) into the scroll animation.
+    pub fn scroll_impulse(
+        &mut self,
+        mut delta: gpui::Point<ScrollOffset>,
+        axis: Option<Axis>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.scroll_manager.forbid_vertical_scroll {
+            delta.y = 0.;
+        }
+        self.scroll_manager.update_ongoing_scroll(axis);
+        self.scroll_manager.scroll_velocity.impulse(delta);
+        self.scroll_manager.show_scrollbars(window, cx);
+        cx.notify();
+    }
+
+    /// Advance the scroll animation by one frame through the normal scroll path, so
+    /// anchor and event side effects still fire. Called from `EditorElement` paint.
+    pub(crate) fn tick_scroll_animation(
+        &mut self,
+        line_height: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> WasScrolled {
+        if !self.scroll_manager.scroll_velocity.is_active() {
+            return WasScrolled(false);
+        }
+        // Snap under ~1px, converted to line units so it's font-size and display density independent.
+        let snap_epsilon = 1.0 / (f64::from(line_height) * window.scale_factor() as f64);
+        let delta = self
+            .scroll_manager
+            .scroll_velocity
+            .advance(Instant::now(), snap_epsilon);
+        let current = self.scroll_position(cx);
+        let target = current + delta;
+        self.scroll_manager.applying_scroll_animation = true;
+        let was_scrolled = self.set_scroll_position_internal(target, true, false, window, cx);
+        self.scroll_manager.applying_scroll_animation = false;
+
+        // Stop any axis the scroll path clamped, so we don't keep pushing past a boundary.
+        const CLAMP_EPSILON: f64 = 1e-3;
+        let actual = self.scroll_position(cx);
+        if (actual.x - target.x).abs() > CLAMP_EPSILON {
+            self.scroll_manager
+                .scroll_velocity
+                .stop_along(Axis::Horizontal);
+        }
+        if (actual.y - target.y).abs() > CLAMP_EPSILON {
+            self.scroll_manager
+                .scroll_velocity
+                .stop_along(Axis::Vertical);
+        }
+        if self.scroll_manager.scroll_velocity.is_active() {
+            window.request_animation_frame();
+        }
+        was_scrolled
+    }
+
     pub fn apply_scroll_delta(
         &mut self,
         scroll_delta: gpui::Point<f32>,
@@ -762,6 +851,14 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
+        if SmoothScrollSettings::enabled(cx) {
+            let current = self.scroll_position(cx);
+            self.scroll_manager
+                .scroll_velocity
+                .retarget(current, point(0., row.as_f64()));
+            cx.notify();
+            return;
+        }
         let snapshot = self.snapshot(window, cx).display_snapshot;
         let new_screen_top = DisplayPoint::new(row, 0);
         let new_screen_top = new_screen_top.to_offset(&snapshot, Bias::Left);
@@ -942,13 +1039,27 @@ impl Editor {
                 amount.columns(visible_column_count),
                 amount.lines(visible_line_count),
             );
-        self.set_scroll_position(new_position, window, cx);
+        if SmoothScrollSettings::enabled(cx) {
+            // Relative impulse, so consecutive presses each add one page even mid-animation.
+            let start_position = self.scroll_position(cx);
+            let mut delta = new_position - start_position;
+            if self.scroll_manager.forbid_vertical_scroll {
+                delta.y = 0.;
+            }
+            self.scroll_manager.scroll_velocity.impulse(delta);
+            self.scroll_manager.show_scrollbars(window, cx);
+            cx.notify();
+        } else {
+            self.set_scroll_position(new_position, window, cx);
+        }
     }
 
     /// Returns an ordering. The newest selection is:
     ///     Ordering::Equal => on screen
     ///     Ordering::Less => above or to the left of the screen
     ///     Ordering::Greater => below or to the right of the screen
+    ///
+    /// "Screen" is where any in-flight scroll animation will land, not the live position.
     pub fn newest_selection_on_screen(&self, cx: &mut App) -> Ordering {
         let snapshot = self.display_map.update(cx, |map, cx| map.snapshot(cx));
         let newest_head = self
@@ -956,7 +1067,7 @@ impl Editor {
             .newest_anchor()
             .head()
             .to_display_point(&snapshot);
-        let screen_top = self.scroll_manager.scroll_top_display_point(&snapshot, cx);
+        let screen_top = self.projected_scroll_top_display_point(&snapshot, cx);
 
         if screen_top > newest_head {
             return Ordering::Less;

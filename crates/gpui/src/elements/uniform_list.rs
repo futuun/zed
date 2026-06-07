@@ -368,6 +368,7 @@ impl Element for UniformList {
         };
 
         let shared_scroll_offset = self.interactivity.scroll_offset.clone().unwrap();
+        let shared_scroll_velocity = self.interactivity.scroll_velocity.clone();
         let item_height = longest_item_size.height;
         let shared_scroll_to_item = self.scroll_handle.as_mut().and_then(|handle| {
             let mut handle = handle.0.borrow_mut();
@@ -434,6 +435,10 @@ impl Element for UniformList {
                         let is_below = item_bottom > scroll_top + list_height;
 
                         if scroll_strict || is_above || is_below {
+                            // Cancel any in-flight wheel animation before jumping.
+                            if let Some(scroll_velocity) = shared_scroll_velocity.as_ref() {
+                                scroll_velocity.borrow_mut().stop();
+                            }
                             if strategy == ScrollStrategy::Nearest {
                                 if is_above {
                                     strategy = ScrollStrategy::Top;

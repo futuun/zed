@@ -109,7 +109,9 @@ impl Vim {
         self.update_editor(cx, |vim, editor, cx| {
             let should_move_cursor = editor.newest_selection_on_screen(cx).is_eq();
             let display_snapshot = editor.display_map.update(cx, |map, cx| map.snapshot(cx));
-            let old_top = editor.scroll_top_display_point(&display_snapshot, cx);
+            // Projected top, so cursor math aims at where a smooth-scroll animation
+            // will land rather than the current position.
+            let old_top = editor.projected_scroll_top_display_point(&display_snapshot, cx);
 
             if editor.scroll_hover(amount, window, cx) {
                 return;
@@ -141,7 +143,7 @@ impl Vim {
             };
 
             let display_snapshot = editor.display_map.update(cx, |map, cx| map.snapshot(cx));
-            let top = editor.scroll_top_display_point(&display_snapshot, cx);
+            let top = editor.projected_scroll_top_display_point(&display_snapshot, cx);
             let vertical_scroll_margin = EditorSettings::get_global(cx).vertical_scroll_margin;
 
             let mut move_cursor = |map: &editor::display_map::DisplaySnapshot,

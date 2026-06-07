@@ -8057,7 +8057,9 @@ impl Element for EditorElement {
                                 window,
                                 cx,
                             );
-                        if was_scrolled.0 {
+                        // After autoscroll, so a retarget from this frame animates immediately.
+                        let was_animated = editor.tick_scroll_animation(line_height, window, cx);
+                        if was_scrolled.0 || was_animated.0 {
                             snapshot = editor.snapshot(window, cx);
                         }
                         (

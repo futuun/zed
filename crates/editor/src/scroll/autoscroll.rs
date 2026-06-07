@@ -5,7 +5,7 @@ use crate::{
     editor_settings::GoToDefinitionScrollStrategy,
     scroll::{ScrollOffset, WasScrolled},
 };
-use gpui::{App, Bounds, Context, Pixels, Window};
+use gpui::{App, Axis, Bounds, Context, Pixels, SmoothScrollSettings, Window};
 use language::Point;
 use multi_buffer::Anchor;
 use settings::Settings;
@@ -251,35 +251,35 @@ impl Editor {
                 }
 
                 if needs_scroll_up ^ needs_scroll_down {
-                    self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+                    self.apply_autoscroll(scroll_position, local, window, cx)
                 } else {
                     WasScrolled(false)
                 }
             }
             AutoscrollStrategy::Center => {
                 scroll_position.y = (target_top - margin).max(0.0);
-                self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+                self.apply_autoscroll(scroll_position, local, window, cx)
             }
             AutoscrollStrategy::Focused => {
                 let margin = margin.min(self.scroll_manager.vertical_scroll_margin);
                 scroll_position.y = (target_top - margin).max(0.0);
-                self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+                self.apply_autoscroll(scroll_position, local, window, cx)
             }
             AutoscrollStrategy::Top => {
                 scroll_position.y = (target_top).max(0.0);
-                self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+                self.apply_autoscroll(scroll_position, local, window, cx)
             }
             AutoscrollStrategy::Bottom => {
                 scroll_position.y = (target_bottom - visible_lines).max(0.0);
-                self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+                self.apply_autoscroll(scroll_position, local, window, cx)
             }
             AutoscrollStrategy::TopRelative(lines) => {
                 scroll_position.y = target_top - lines as ScrollOffset;
-                self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+                self.apply_autoscroll(scroll_position, local, window, cx)
             }
             AutoscrollStrategy::BottomRelative(lines) => {
                 scroll_position.y = target_bottom + lines as ScrollOffset;
-                self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+                self.apply_autoscroll(scroll_position, local, window, cx)
             }
         };
 
@@ -292,6 +292,30 @@ impl Editor {
 
         let was_scrolled = WasScrolled(editor_was_scrolled.0 || was_autoscrolled.0);
         (NeedsHorizontalAutoscroll(true), was_scrolled)
+    }
+
+    /// Apply a vertical autoscroll target, either instantly or by retargeting the
+    /// scroll animation. Only the vertical axis is retargeted, preserving in-flight
+    /// horizontal motion (horizontal autoscroll runs separately).
+    fn apply_autoscroll(
+        &mut self,
+        scroll_position: gpui::Point<ScrollOffset>,
+        local: bool,
+        window: &mut Window,
+        cx: &mut Context<Editor>,
+    ) -> WasScrolled {
+        if SmoothScrollSettings::enabled(cx) {
+            let current = self.scroll_position(cx);
+            self.scroll_manager.scroll_velocity.retarget_along(
+                Axis::Vertical,
+                current.y,
+                scroll_position.y,
+            );
+            window.request_animation_frame();
+            WasScrolled(false)
+        } else {
+            self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+        }
     }
 
     pub(crate) fn visible_sticky_header_count_for_point(
@@ -416,20 +440,30 @@ impl Editor {
         let scroll_left = self.scroll_manager.offset(cx).x * em_advance;
         let scroll_right = scroll_left + viewport_width;
 
-        let was_scrolled = if target_left < scroll_left {
-            scroll_position.x = target_left / em_advance;
-            self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+        let target_x = if target_left < scroll_left {
+            target_left / em_advance
         } else if target_right > scroll_right {
-            scroll_position.x = (target_right - viewport_width) / em_advance;
-            self.set_scroll_position_internal(scroll_position, local, true, window, cx)
+            (target_right - viewport_width) / em_advance
         } else {
-            WasScrolled(false)
+            return None;
         };
 
-        if was_scrolled.0 {
-            Some(scroll_position)
-        } else {
+        if SmoothScrollSettings::enabled(cx) {
+            // Retarget only the horizontal axis, preserving an in-flight vertical
+            // autoscroll toward the same cursor.
+            self.scroll_manager.scroll_velocity.retarget_along(
+                Axis::Horizontal,
+                scroll_position.x,
+                target_x,
+            );
+            window.request_animation_frame();
+            // Position is unchanged this frame, so the caller must not re-layout.
             None
+        } else {
+            scroll_position.x = target_x;
+            let was_scrolled =
+                self.set_scroll_position_internal(scroll_position, local, true, window, cx);
+            was_scrolled.0.then_some(scroll_position)
         }
     }
 
