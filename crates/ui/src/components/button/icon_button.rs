@@ -45,6 +45,10 @@ impl IconButton {
             alpha: None,
         };
         this.base.base = this.base.base.debug_selector(|| format!("ICON-{:?}", icon));
+        let icon_name: &'static str = icon.into();
+        this.base = this
+            .base
+            .aria_label(SharedString::from(icon_name.replace('_', " ")));
         this
     }
 

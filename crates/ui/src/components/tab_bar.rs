@@ -93,6 +93,7 @@ impl RenderOnce for TabBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         div()
             .id(self.id)
+            .role(gpui::Role::TabList)
             .group("tab_bar")
             .flex()
             .flex_none()

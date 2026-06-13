@@ -5509,8 +5509,14 @@ impl ProjectPanel {
             (entry_id.to_proto() as usize).into()
         };
 
+        let is_expanded = details.is_expanded;
+
         div()
             .id(id.clone())
+            .role(gpui::Role::TreeItem)
+            .aria_label(file_name.clone())
+            .aria_selected(is_marked || is_active)
+            .when(kind.is_dir(), |this| this.aria_expanded(is_expanded))
             .relative()
             .group(GROUP_NAME)
             .cursor_pointer()

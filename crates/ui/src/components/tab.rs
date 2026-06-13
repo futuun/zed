@@ -142,6 +142,8 @@ impl RenderOnce for Tab {
         };
 
         self.div
+            .role(gpui::Role::Tab)
+            .aria_selected(self.selected)
             .h(Tab::container_height(cx))
             .bg(tab_bg)
             .border_color(cx.theme().colors().border)

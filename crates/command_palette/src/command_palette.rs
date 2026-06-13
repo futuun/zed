@@ -16,7 +16,7 @@ use command_palette_hooks::{
 use fuzzy_nucleo::{StringMatch, StringMatchCandidate};
 use gpui::{
     Action, App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    ParentElement, Render, Styled, Task, TaskExt, WeakEntity, Window,
+    ParentElement, Render, SharedString, Styled, Task, TaskExt, WeakEntity, Window,
 };
 use persistence::CommandPaletteDB;
 use picker::Direction;
@@ -645,6 +645,17 @@ impl PickerDelegate for CommandPaletteDelegate {
                         )),
                 ),
         )
+    }
+
+    fn match_label(
+        &self,
+        ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<Picker<Self>>,
+    ) -> Option<SharedString> {
+        let matching_command = self.matches.get(ix)?;
+        let command = self.commands.get(matching_command.candidate_id)?;
+        Some(command.name.clone().into())
     }
 
     fn render_footer(

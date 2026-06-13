@@ -295,6 +295,16 @@ pub trait PickerDelegate: Sized + 'static {
         cx: &mut Context<Picker<Self>>,
     ) -> Option<Self::ListItem>;
 
+    /// The plain-text label of the match at `ix`, announced by screen readers.
+    fn match_label(
+        &self,
+        _ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<Picker<Self>>,
+    ) -> Option<SharedString> {
+        None
+    }
+
     fn render_header(
         &self,
         _window: &mut Window,
@@ -1048,7 +1058,15 @@ impl<D: PickerDelegate> Picker<D> {
 
         div()
             .id(("item", ix))
-            .when(selectable, |this| this.cursor_pointer())
+            .when(selectable, |this| {
+                // Not `Role::ListItem`, which macOS maps to a non-actionable `AXGroup`.
+                this.cursor_pointer()
+                    .role(gpui::Role::Row)
+                    .aria_selected(ix == self.delegate.selected_index())
+                    .when_some(self.delegate.match_label(ix, window, cx), |this, label| {
+                        this.aria_label(label)
+                    })
+            })
             .child(
                 canvas(
                     move |bounds, _window, _cx| {
